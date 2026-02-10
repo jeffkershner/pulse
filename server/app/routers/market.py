@@ -1,0 +1,172 @@
+import asyncio
+import json
+import logging
+
+import httpx
+from fastapi import APIRouter, Depends, Query, Request
+from sse_starlette.sse import EventSourceResponse
+
+from app.config import settings
+from app.middleware.auth import get_current_user
+from app.models.user import User
+from app.schemas.market import IndexQuote, QuoteSnapshot, SymbolSearchResult
+from app.services import finnhub_service
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(tags=["market"])
+
+INDEX_MAP = {
+    "DIA": "DOW 30",
+    "SPY": "S&P 500",
+    "QQQ": "NASDAQ 100",
+    "IWM": "Russell 2000",
+}
+
+
+@router.get("/market/indices", response_model=list[IndexQuote])
+async def get_indices():
+    results = []
+    for symbol, name in INDEX_MAP.items():
+        quote = finnhub_service.get_quote(symbol)
+        if quote:
+            sparkline = finnhub_service.get_sparkline(symbol)
+            prev = sparkline[0] if len(sparkline) > 1 else quote["price"]
+            change = quote["price"] - prev
+            change_pct = (change / prev * 100) if prev else 0
+            results.append(IndexQuote(
+                symbol=symbol,
+                name=name,
+                price=quote["price"],
+                change=round(change, 2),
+                change_percent=round(change_pct, 2),
+            ))
+        else:
+            # Try Finnhub REST as fallback
+            try:
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(
+                        f"https://finnhub.io/api/v1/quote",
+                        params={"symbol": symbol, "token": settings.finnhub_api_key},
+                        timeout=5,
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        results.append(IndexQuote(
+                            symbol=symbol,
+                            name=name,
+                            price=data.get("c", 0),
+                            change=round(data.get("d", 0), 2),
+                            change_percent=round(data.get("dp", 0), 2),
+                        ))
+            except Exception as e:
+                logger.debug(f"Failed to fetch index {symbol}: {e}")
+    return results
+
+
+@router.get("/quotes/latest", response_model=list[QuoteSnapshot])
+async def get_latest_quotes(symbols: str = Query(...)):
+    symbol_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    results = []
+    for symbol in symbol_list:
+        quote = finnhub_service.get_quote(symbol)
+        sparkline = finnhub_service.get_sparkline(symbol)
+        if quote:
+            results.append(QuoteSnapshot(
+                symbol=symbol,
+                price=quote["price"],
+                volume=quote.get("volume", 0),
+                timestamp=quote.get("timestamp", 0),
+                sparkline=sparkline,
+            ))
+    return results
+
+
+@router.get("/search", response_model=list[SymbolSearchResult])
+async def search_symbols(
+    q: str = Query(..., min_length=1),
+    _user: User = Depends(get_current_user),
+):
+    if not settings.finnhub_api_key or settings.finnhub_api_key == "your_finnhub_api_key_here":
+        return []
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                "https://finnhub.io/api/v1/search",
+                params={"q": q, "token": settings.finnhub_api_key},
+                timeout=5,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                return [
+                    SymbolSearchResult(
+                        symbol=r["symbol"],
+                        description=r.get("description", ""),
+                        type=r.get("type", ""),
+                    )
+                    for r in data.get("result", [])[:10]
+                ]
+    except Exception as e:
+        logger.error(f"Search failed: {e}")
+    return []
+
+
+@router.get("/stream")
+async def stream_quotes(
+    request: Request,
+    symbols: str = Query(...),
+    token: str = Query(...),
+):
+    # Validate token
+    from app.services.auth_service import decode_token
+    payload = decode_token(token)
+    if not payload or payload.get("type") != "access":
+        from fastapi import HTTPException, status
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
+    symbol_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+
+    async def event_generator():
+        # Send initial snapshot
+        snapshots = []
+        for symbol in symbol_list:
+            quote = finnhub_service.get_quote(symbol)
+            sparkline = finnhub_service.get_sparkline(symbol)
+            if quote:
+                snapshots.append({
+                    "symbol": symbol,
+                    "price": quote["price"],
+                    "volume": quote.get("volume", 0),
+                    "timestamp": quote.get("timestamp", 0),
+                    "sparkline": sparkline,
+                })
+        yield {"event": "snapshot", "data": json.dumps(snapshots)}
+
+        # Stream updates
+        last_prices: dict[str, float] = {}
+        while True:
+            if await request.is_disconnected():
+                break
+
+            updates = []
+            for symbol in symbol_list:
+                quote = finnhub_service.get_quote(symbol)
+                if quote:
+                    price = quote["price"]
+                    if last_prices.get(symbol) != price:
+                        last_prices[symbol] = price
+                        sparkline = finnhub_service.get_sparkline(symbol)
+                        updates.append({
+                            "symbol": symbol,
+                            "price": price,
+                            "volume": quote.get("volume", 0),
+                            "timestamp": quote.get("timestamp", 0),
+                            "sparkline": sparkline,
+                        })
+
+            if updates:
+                yield {"event": "quote", "data": json.dumps(updates)}
+
+            await asyncio.sleep(0.5)
+
+    return EventSourceResponse(event_generator())
