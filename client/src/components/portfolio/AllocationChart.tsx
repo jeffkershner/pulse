@@ -46,7 +46,7 @@ export default function AllocationChart({ positions, summary }: AllocationChartP
               cy="50%"
               outerRadius={90}
               dataKey="value"
-              label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+              label={({ name, percent }: { name: string; percent?: number }) => `${name} ${((percent ?? 0) * 100).toFixed(0)}%`}
               labelLine={false}
             >
               {data.map((_, index) => (
@@ -54,7 +54,7 @@ export default function AllocationChart({ positions, summary }: AllocationChartP
               ))}
             </Pie>
             <Tooltip
-              formatter={(value: number) => formatCurrency(value)}
+              formatter={(value) => formatCurrency(Number(value))}
               contentStyle={{ background: 'hsl(225 30% 8.5%)', border: '1px solid hsl(224 25% 16%)', borderRadius: '8px' }}
               labelStyle={{ color: 'hsl(210 40% 98%)' }}
               itemStyle={{ color: 'hsl(210 40% 98%)' }}
