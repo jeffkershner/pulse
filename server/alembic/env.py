@@ -11,10 +11,14 @@ from app.models import *  # noqa: F401, F403
 
 config = context.config
 
-# Normalize Neon URLs to use asyncpg driver
+# Normalize Neon URLs to use asyncpg driver and strip unsupported params
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 _db_url = settings.database_url
 if _db_url.startswith("postgresql://"):
     _db_url = _db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+_parsed = urlparse(_db_url)
+_params = {k: v for k, v in parse_qs(_parsed.query).items() if k not in ("sslmode", "channel_binding")}
+_db_url = urlunparse(_parsed._replace(query=urlencode(_params, doseq=True)))
 config.set_main_option("sqlalchemy.url", _db_url)
 
 if config.config_file_name is not None:
