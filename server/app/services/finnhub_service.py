@@ -179,17 +179,20 @@ async def _seed_cache_from_rest():
                 if resp.status_code == 200:
                     data = resp.json()
                     price = data.get("c", 0)
+                    prev_close = data.get("pc", 0)
                     if price > 0:
                         quote_cache[symbol] = {
                             "symbol": symbol,
                             "price": price,
-                            "volume": 0,
-                            "timestamp": int(time.time() * 1000),
+                            "volume": data.get("v", 0) or 0,
+                            "timestamp": data.get("t", int(time.time())) * 1000,
                         }
                         if symbol not in sparkline_cache:
                             sparkline_cache[symbol] = deque(maxlen=20)
+                        if prev_close > 0:
+                            sparkline_cache[symbol].append(prev_close)
                         sparkline_cache[symbol].append(price)
-                        logger.debug(f"Seeded {symbol} @ {price}")
+                        logger.debug(f"Seeded {symbol} @ {price} (pc={prev_close})")
                 # Small delay to respect rate limits (60/min)
                 await asyncio.sleep(0.1)
             except Exception as e:
@@ -203,7 +206,8 @@ async def start():
     _running = True
     for symbol in DEFAULT_SYMBOLS:
         _subscribed_symbols.add(symbol)
-    await _seed_cache_from_rest()
+    # Seed cache in background so it doesn't block server startup
+    asyncio.create_task(_seed_cache_from_rest())
     _task = asyncio.create_task(_connect_and_consume())
     logger.info(f"Finnhub service started with {len(_subscribed_symbols)} symbols")
 

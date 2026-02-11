@@ -9,7 +9,7 @@ from sse_starlette.sse import EventSourceResponse
 from app.config import settings
 from app.middleware.auth import get_current_user
 from app.models.user import User
-from app.schemas.market import IndexQuote, QuoteSnapshot, SymbolSearchResult
+from app.schemas.market import IndexQuote, MarketStatus, QuoteSnapshot, SymbolSearchResult
 from app.services import finnhub_service
 
 logger = logging.getLogger(__name__)
@@ -62,6 +62,36 @@ async def get_indices():
             except Exception as e:
                 logger.debug(f"Failed to fetch index {symbol}: {e}")
     return results
+
+
+@router.get("/market/status", response_model=MarketStatus)
+async def get_market_status():
+    if not settings.finnhub_api_key or settings.finnhub_api_key == "your_finnhub_api_key_here":
+        # Fallback: naive weekday + time check in ET
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo("America/New_York"))
+        day = now.weekday()  # 0=Mon, 6=Sun
+        if day >= 5:
+            return MarketStatus(is_open=False)
+        total_mins = now.hour * 60 + now.minute
+        return MarketStatus(is_open=570 <= total_mins < 960)
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                "https://finnhub.io/api/v1/stock/market-status",
+                params={"exchange": "US", "token": settings.finnhub_api_key},
+                timeout=5,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                return MarketStatus(
+                    is_open=data.get("isOpen", False),
+                    holiday=data.get("holiday") or None,
+                )
+    except Exception as e:
+        logger.error(f"Market status check failed: {e}")
+    return MarketStatus(is_open=False)
 
 
 @router.get("/quotes/latest", response_model=list[QuoteSnapshot])

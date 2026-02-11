@@ -1,5 +1,6 @@
-import { useEffect, useRef } from 'react'
-import { createChart, AreaSeries, type IChartApi, type ISeriesApi, type AreaSeriesPartialOptions } from 'lightweight-charts'
+import { useEffect, useRef, useState } from 'react'
+import { createChart, CandlestickSeries, type IChartApi, type ISeriesApi } from 'lightweight-charts'
+import { fetchCandles } from '@/api/market'
 import { useQuoteStore } from '@/stores/quoteStore'
 
 interface PriceChartProps {
@@ -9,14 +10,15 @@ interface PriceChartProps {
 export default function PriceChart({ symbol }: PriceChartProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
-  const seriesRef = useRef<ISeriesApi<'Area'> | null>(null)
+  const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     if (!containerRef.current) return
 
     const chart = createChart(containerRef.current, {
       width: containerRef.current.clientWidth,
-      height: 200,
+      height: 300,
       layout: {
         background: { color: 'transparent' },
         textColor: '#9ca3af',
@@ -30,30 +32,39 @@ export default function PriceChart({ symbol }: PriceChartProps) {
       },
       timeScale: {
         borderColor: 'rgba(255,255,255,0.1)',
-        timeVisible: true,
+        timeVisible: false,
       },
     })
     chartRef.current = chart
 
-    const areaOptions: AreaSeriesPartialOptions = {
-      lineColor: '#22c55e',
-      topColor: 'rgba(34, 197, 94, 0.3)',
-      bottomColor: 'rgba(34, 197, 94, 0.02)',
-      lineWidth: 2,
-    }
-    const series = chart.addSeries(AreaSeries, areaOptions)
+    const series = chart.addSeries(CandlestickSeries, {
+      upColor: '#22c55e',
+      downColor: '#ef4444',
+      borderUpColor: '#22c55e',
+      borderDownColor: '#ef4444',
+      wickUpColor: '#22c55e',
+      wickDownColor: '#ef4444',
+    })
     seriesRef.current = series
 
-    // Load initial sparkline data
-    const quote = useQuoteStore.getState().quotes[symbol]
-    if (quote?.sparkline?.length) {
-      const now = Math.floor(Date.now() / 1000)
-      const data = quote.sparkline.map((price, i) => ({
-        time: (now - (quote.sparkline.length - i) * 30) as any,
-        value: price,
-      }))
-      series.setData(data)
-    }
+    // Fetch historical candle data
+    setLoading(true)
+    fetchCandles(symbol, 'D', 90)
+      .then((candles) => {
+        if (candles.length && seriesRef.current) {
+          const data = candles.map((c) => ({
+            time: c.time as any,
+            open: c.open,
+            high: c.high,
+            low: c.low,
+            close: c.close,
+          }))
+          seriesRef.current.setData(data)
+          chart.timeScale().fitContent()
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false))
 
     const handleResize = () => {
       if (containerRef.current) {
@@ -68,17 +79,32 @@ export default function PriceChart({ symbol }: PriceChartProps) {
     }
   }, [symbol])
 
-  // Stream updates
+  // Stream live updates as the latest candle
   useEffect(() => {
     const unsub = useQuoteStore.subscribe((state) => {
       const quote = state.quotes[symbol]
       if (quote && seriesRef.current) {
-        const time = Math.floor(quote.timestamp / 1000) as any
-        seriesRef.current.update({ time, value: quote.price })
+        const today = Math.floor(new Date().setHours(0, 0, 0, 0) / 1000)
+        seriesRef.current.update({
+          time: today as any,
+          open: quote.price,
+          high: quote.price,
+          low: quote.price,
+          close: quote.price,
+        })
       }
     })
     return unsub
   }, [symbol])
 
-  return <div ref={containerRef} className="w-full" />
+  return (
+    <div className="relative w-full">
+      {loading && (
+        <div className="absolute inset-0 flex items-center justify-center text-muted-foreground text-sm">
+          Loading chart...
+        </div>
+      )}
+      <div ref={containerRef} className="w-full" />
+    </div>
+  )
 }

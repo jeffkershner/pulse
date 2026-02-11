@@ -21,3 +21,8 @@ class SymbolSearchResult(BaseModel):
     symbol: str
     description: str
     type: str
+
+
+class MarketStatus(BaseModel):
+    is_open: bool
+    holiday: str | None = None

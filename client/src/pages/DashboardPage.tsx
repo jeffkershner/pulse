@@ -2,7 +2,6 @@ import { useMemo, useState, useCallback, useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import IndexCards from '@/components/market/IndexCards'
 import SparklineChart from '@/components/market/SparklineChart'
-import PriceChart from '@/components/market/PriceChart'
 import AddTickerModal from '@/components/watchlist/AddTickerModal'
 import TradeModal from '@/components/trading/TradeModal'
 import { Button } from '@/components/ui/button'
@@ -11,6 +10,7 @@ import { useQuoteStream } from '@/hooks/useQuoteStream'
 import { useQuoteStore, type Quote } from '@/stores/quoteStore'
 import { useAuthStore } from '@/stores/authStore'
 import { fetchWatchlist, addToWatchlist, removeFromWatchlist } from '@/api/watchlist'
+import { fetchMarketStatus } from '@/api/market'
 import {
   ALL_DASHBOARD_SYMBOLS,
   ALL_STOCK_SYMBOLS,
@@ -38,13 +38,22 @@ function useCurrentTime() {
   return time
 }
 
-function isMarketOpen(now: Date): boolean {
-  const day = now.getDay()
-  if (day === 0 || day === 6) return false
-  const hours = now.getHours()
-  const minutes = now.getMinutes()
-  const totalMins = hours * 60 + minutes
-  return totalMins >= 570 && totalMins < 960 // 9:30 AM - 4:00 PM
+function useMarketStatus() {
+  const [isOpen, setIsOpen] = useState(false)
+  const [holiday, setHoliday] = useState<string | null>(null)
+  useEffect(() => {
+    const check = async () => {
+      try {
+        const status = await fetchMarketStatus()
+        setIsOpen(status.is_open)
+        setHoliday(status.holiday)
+      } catch { /* ignore */ }
+    }
+    check()
+    const interval = setInterval(check, 60_000) // re-check every minute
+    return () => clearInterval(interval)
+  }, [])
+  return { isOpen, holiday }
 }
 
 // --- MarketRow ---
@@ -58,7 +67,6 @@ interface MarketRowProps {
 
 function MarketRow({ symbol, isWatchlistItem, onRemove, onTrade }: MarketRowProps) {
   const quote = useQuoteStore((s) => s.quotes[symbol]) as Quote | undefined
-  const [expanded, setExpanded] = useState(false)
   const [flashClass, setFlashClass] = useState('')
   const prevPriceRef = useRef<number | null>(null)
 
@@ -83,98 +91,87 @@ function MarketRow({ symbol, isWatchlistItem, onRemove, onTrade }: MarketRowProp
   const isUp = change >= 0
 
   return (
-    <>
-      <TableRow
-        className={cn('cursor-pointer hover:bg-muted/30', flashClass)}
-        onClick={() => setExpanded(!expanded)}
-      >
-        {/* Symbol + Company Name */}
-        <TableCell className="py-5">
-          <div className="flex items-center gap-3">
-            <div className={cn('w-1 h-10 rounded-full', isUp ? 'bg-green-500' : 'bg-red-500')} />
-            <div>
-              <div className="font-bold text-[15px]">{symbol}</div>
-              <div className="text-sm text-muted-foreground">{companyName}</div>
-            </div>
+    <TableRow
+      className={cn('hover:bg-muted/30', flashClass)}
+    >
+      {/* Symbol + Company Name */}
+      <TableCell className="py-5">
+        <div className="flex items-center gap-3">
+          <div className={cn('w-1 h-10 rounded-full', isUp ? 'bg-green-500' : 'bg-red-500')} />
+          <div>
+            <div className="font-bold text-[15px]">{symbol}</div>
+            <div className="text-sm text-muted-foreground">{companyName}</div>
           </div>
-        </TableCell>
+        </div>
+      </TableCell>
 
-        {/* Price */}
-        <TableCell className="text-right py-5">
-          <span className="font-mono text-[15px] border border-border rounded px-2.5 py-1">
-            ${quote ? quote.price.toFixed(2) : '--'}
-          </span>
-        </TableCell>
+      {/* Price */}
+      <TableCell className="text-right py-5">
+        <span className="font-mono text-[15px] border border-border rounded px-2.5 py-1">
+          ${quote ? quote.price.toFixed(2) : '--'}
+        </span>
+      </TableCell>
 
-        {/* Change */}
-        <TableCell className="text-center py-5">
-          {quote ? (
-            <div className={cn('inline-flex flex-col items-center', isUp ? 'text-green-500' : 'text-red-500')}>
-              <span className="font-mono text-sm font-medium">
-                {isUp ? '+' : ''}{change.toFixed(2)}
-              </span>
-              <span
-                className={cn(
-                  'text-xs mt-0.5 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded font-medium',
-                  isUp ? 'bg-green-500/15 text-green-500' : 'bg-red-500/15 text-red-500'
-                )}
-              >
-                {isUp ? '\u25B2' : '\u25BC'} {Math.abs(changePct).toFixed(2)}%
-              </span>
-            </div>
-          ) : (
-            <span className="text-muted-foreground">--</span>
-          )}
-        </TableCell>
-
-        {/* Trend */}
-        <TableCell className="text-center py-5">
-          {quote ? <SparklineChart data={quote.sparkline} /> : null}
-        </TableCell>
-
-        {/* Volume */}
-        <TableCell className="text-right py-5 font-mono text-muted-foreground">
-          {quote ? formatVolume(quote.volume) : '--'}
-        </TableCell>
-
-        {/* Remove */}
-        <TableCell className="text-right py-5 w-[40px]">
-          {isWatchlistItem && onRemove ? (
-            <button
-              onClick={(e) => { e.stopPropagation(); onRemove(symbol) }}
-              className="text-muted-foreground/40 hover:text-foreground transition-colors"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          ) : (
-            <span className="text-muted-foreground/20">
-              <X className="h-4 w-4" />
+      {/* Change */}
+      <TableCell className="text-center py-5">
+        {quote ? (
+          <div className={cn('inline-flex flex-col items-center', isUp ? 'text-green-500' : 'text-red-500')}>
+            <span className="font-mono text-sm font-medium">
+              {isUp ? '+' : ''}{change.toFixed(2)}
             </span>
-          )}
-        </TableCell>
-      </TableRow>
+            <span
+              className={cn(
+                'text-xs mt-0.5 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded font-medium',
+                isUp ? 'bg-green-500/15 text-green-500' : 'bg-red-500/15 text-red-500'
+              )}
+            >
+              {isUp ? '\u25B2' : '\u25BC'} {Math.abs(changePct).toFixed(2)}%
+            </span>
+          </div>
+        ) : (
+          <span className="text-muted-foreground">--</span>
+        )}
+      </TableCell>
 
-      {expanded && (
-        <TableRow>
-          <TableCell colSpan={6} className="p-0">
-            <div className="p-4 bg-muted/20">
-              <div className="flex gap-2 mb-3">
-                {onTrade && (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={(e) => { e.stopPropagation(); onTrade(symbol) }}
-                  >
-                    Trade
-                  </Button>
-                )}
-              </div>
-              <PriceChart symbol={symbol} />
-            </div>
-          </TableCell>
-        </TableRow>
-      )}
-    </>
+      {/* Trend */}
+      <TableCell className="text-center py-5">
+        {quote ? <SparklineChart data={quote.sparkline} /> : null}
+      </TableCell>
+
+      {/* Volume */}
+      <TableCell className="text-right py-5 font-mono text-muted-foreground">
+        {quote ? formatVolume(quote.volume) : '--'}
+      </TableCell>
+
+      {/* Trade */}
+      <TableCell className="text-center py-5">
+        {onTrade && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => onTrade(symbol)}
+          >
+            Trade
+          </Button>
+        )}
+      </TableCell>
+
+      {/* Remove */}
+      <TableCell className="text-right py-5 w-[40px]">
+        {isWatchlistItem && onRemove ? (
+          <button
+            onClick={() => onRemove(symbol)}
+            className="text-muted-foreground/40 hover:text-foreground transition-colors"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        ) : (
+          <span className="text-muted-foreground/20">
+            <X className="h-4 w-4" />
+          </span>
+        )}
+      </TableCell>
+    </TableRow>
   )
 }
 
@@ -192,8 +189,8 @@ function SortIcon({ field, current, direction }: { field: SortField; current: So
 export default function DashboardPage() {
   const { email, logout } = useAuthStore()
   const now = useCurrentTime()
-  const marketOpen = isMarketOpen(now)
-  const timeStr = now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true })
+  const { isOpen: marketOpen, holiday } = useMarketStatus()
+  const timeStr = now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true, timeZone: 'America/New_York' })
 
   const [filter, setFilter] = useState<ExchangeFilter>('ALL')
   const [sortField, setSortField] = useState<SortField>('symbol')
@@ -326,7 +323,7 @@ export default function DashboardPage() {
                 )}
               />
               <span className="text-muted-foreground font-mono text-xs tracking-wider">
-                {marketOpen ? 'MARKET OPEN' : 'MARKET CLOSED'}
+                {marketOpen ? 'MARKET OPEN' : holiday ? `CLOSED — ${holiday.toUpperCase()}` : 'MARKET CLOSED'}
               </span>
               <span className="text-muted-foreground font-mono text-xs ml-2">{timeStr}</span>
             </div>
@@ -419,6 +416,9 @@ export default function DashboardPage() {
                     Volume
                     <SortIcon field="volume" current={sortField} direction={sortDir} />
                   </span>
+                </TableHead>
+                <TableHead className="text-center">
+                  <span className="text-xs font-semibold tracking-wider uppercase">Trade</span>
                 </TableHead>
                 <TableHead className="w-[40px]" />
               </TableRow>

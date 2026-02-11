@@ -22,6 +22,15 @@ export interface SearchResult {
   type: string
 }
 
+export interface MarketStatus {
+  is_open: boolean
+  holiday: string | null
+}
+
+export function fetchMarketStatus(): Promise<MarketStatus> {
+  return apiFetch('/market/status')
+}
+
 export function fetchIndices(): Promise<IndexQuote[]> {
   return apiFetch('/market/indices')
 }
