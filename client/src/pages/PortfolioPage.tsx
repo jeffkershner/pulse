@@ -28,7 +28,7 @@ export default function PortfolioPage() {
   return (
     <AppShell>
       <div className="space-y-6">
-        <PortfolioSummaryCards summary={data?.summary ?? null} loading={loading} />
+        <PortfolioSummaryCards summary={data?.summary ?? null} positions={data?.positions ?? []} loading={loading} />
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2">
             <PositionsTable

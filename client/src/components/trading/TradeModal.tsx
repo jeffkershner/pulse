@@ -76,7 +76,7 @@ export default function TradeModal({ symbol, onClose, onSuccess }: TradeModalPro
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="flex gap-3">
             <Select value={side} onValueChange={setSide}>
-              <SelectTrigger>
+              <SelectTrigger className="w-[100px] shrink-0">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -92,6 +92,7 @@ export default function TradeModal({ symbol, onClose, onSuccess }: TradeModalPro
                 onChange={(e) => setQuantity(e.target.value)}
                 min={1}
                 required
+                className="text-lg text-foreground h-10"
               />
               <Button
                 type="button"

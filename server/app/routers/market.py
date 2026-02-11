@@ -174,6 +174,7 @@ async def stream_quotes(
 
         # Stream updates
         last_prices: dict[str, float] = {}
+        heartbeat_counter = 0
         while True:
             if await request.is_disconnected():
                 break
@@ -196,6 +197,13 @@ async def stream_quotes(
 
             if updates:
                 yield {"event": "quote", "data": json.dumps(updates)}
+                heartbeat_counter = 0
+            else:
+                heartbeat_counter += 1
+                # Send heartbeat every ~15 seconds (30 iterations * 0.5s)
+                if heartbeat_counter >= 30:
+                    yield {"event": "heartbeat", "data": ""}
+                    heartbeat_counter = 0
 
             await asyncio.sleep(0.5)
 
