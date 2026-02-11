@@ -50,7 +50,6 @@ export default function PortfolioPage() {
 
       <TradeModal
         symbol={tradeSymbol}
-        cashBalance={data?.summary.cash_balance}
         onClose={() => setTradeSymbol(null)}
         onSuccess={handleTradeSuccess}
       />
