@@ -16,28 +16,36 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["market"])
 
+# ETF tickers used as proxies for major indices, with scaling factors to
+# convert ETF prices to approximate index values.
+# DIA ≈ DJIA / 100, SPY ≈ S&P 500 / 10 (by ETF design, very stable).
+# QQQ and IWM ratios drift over time; these are approximate as of early 2026.
 INDEX_MAP = {
-    "DIA": "DOW 30",
-    "SPY": "S&P 500",
-    "QQQ": "NASDAQ 100",
-    "IWM": "Russell 2000",
+    "DIA":  {"name": "DOW 30",      "factor": 100},
+    "SPY":  {"name": "S&P 500",     "factor": 10},
+    "QQQ":  {"name": "NASDAQ 100",  "factor": 34},
+    "IWM":  {"name": "Russell 2000", "factor": 8.7},
 }
 
 
 @router.get("/market/indices", response_model=list[IndexQuote])
 async def get_indices():
     results = []
-    for symbol, name in INDEX_MAP.items():
+    for symbol, info in INDEX_MAP.items():
+        name = info["name"]
+        factor = info["factor"]
         quote = finnhub_service.get_quote(symbol)
         if quote:
             sparkline = finnhub_service.get_sparkline(symbol)
             prev = sparkline[0] if len(sparkline) > 1 else quote["price"]
-            change = quote["price"] - prev
-            change_pct = (change / prev * 100) if prev else 0
+            price = quote["price"] * factor
+            prev_scaled = prev * factor
+            change = price - prev_scaled
+            change_pct = (change / prev_scaled * 100) if prev_scaled else 0
             results.append(IndexQuote(
                 symbol=symbol,
                 name=name,
-                price=quote["price"],
+                price=round(price, 2),
                 change=round(change, 2),
                 change_percent=round(change_pct, 2),
             ))
@@ -46,17 +54,18 @@ async def get_indices():
             try:
                 async with httpx.AsyncClient() as client:
                     resp = await client.get(
-                        f"https://finnhub.io/api/v1/quote",
+                        "https://finnhub.io/api/v1/quote",
                         params={"symbol": symbol, "token": settings.finnhub_api_key},
                         timeout=5,
                     )
                     if resp.status_code == 200:
                         data = resp.json()
+                        price = data.get("c", 0) * factor
                         results.append(IndexQuote(
                             symbol=symbol,
                             name=name,
-                            price=data.get("c", 0),
-                            change=round(data.get("d", 0), 2),
+                            price=round(price, 2),
+                            change=round(data.get("d", 0) * factor, 2),
                             change_percent=round(data.get("dp", 0), 2),
                         ))
             except Exception as e:
