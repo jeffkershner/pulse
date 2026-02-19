@@ -105,10 +105,11 @@ async def _connect_and_consume():
                                 volume = trade.get("v", 0)
                                 timestamp = trade.get("t", int(time.time() * 1000))
 
+                                prev_volume = quote_cache.get(symbol, {}).get("volume", 0)
                                 quote_cache[symbol] = {
                                     "symbol": symbol,
                                     "price": price,
-                                    "volume": volume,
+                                    "volume": prev_volume + volume,
                                     "timestamp": timestamp,
                                 }
 
