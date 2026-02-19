@@ -156,6 +156,11 @@ async def stream_quotes(
 
     symbol_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
 
+    # Auto-subscribe any symbols not already tracked (e.g. watchlist items after restart)
+    for sym in symbol_list:
+        if not finnhub_service.get_quote(sym):
+            await finnhub_service.subscribe(sym)
+
     async def event_generator():
         # Send initial snapshot
         snapshots = []

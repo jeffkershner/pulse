@@ -49,6 +49,7 @@ def get_all_quotes() -> dict[str, dict]:
 
 async def subscribe(symbol: str):
     global _ws
+    already_subscribed = symbol in _subscribed_symbols
     _subscribed_symbols.add(symbol)
     if _ws:
         try:
@@ -56,6 +57,9 @@ async def subscribe(symbol: str):
             logger.info(f"Subscribed to {symbol}")
         except Exception:
             pass
+    # Seed cache via REST so the symbol has data immediately
+    if not already_subscribed and symbol not in quote_cache:
+        await _seed_symbol_from_rest(symbol)
 
 
 async def unsubscribe(symbol: str):
@@ -183,41 +187,47 @@ async def _run_simulated():
                     sparkline_cache[symbol][-1] = new_price
 
 
+async def _seed_symbol_from_rest(symbol: str):
+    """Fetch a single symbol's quote via REST API to seed the cache."""
+    if not settings.finnhub_api_key or settings.finnhub_api_key == "your_finnhub_api_key_here":
+        return
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                "https://finnhub.io/api/v1/quote",
+                params={"symbol": symbol, "token": settings.finnhub_api_key},
+                timeout=5,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                price = data.get("c", 0)
+                prev_close = data.get("pc", 0)
+                if price > 0:
+                    quote_cache[symbol] = {
+                        "symbol": symbol,
+                        "price": price,
+                        "volume": data.get("v", 0) or 0,
+                        "timestamp": data.get("t", int(time.time())) * 1000,
+                    }
+                    if symbol not in sparkline_cache:
+                        sparkline_cache[symbol] = deque(maxlen=20)
+                    if prev_close > 0:
+                        sparkline_cache[symbol].append(prev_close)
+                    sparkline_cache[symbol].append(price)
+                    _sparkline_last_sample[symbol] = time.time()
+                    logger.debug(f"Seeded {symbol} @ {price} (pc={prev_close})")
+    except Exception as e:
+        logger.debug(f"Failed to seed {symbol}: {e}")
+
+
 async def _seed_cache_from_rest():
     """Fetch initial quotes via REST API so the cache isn't empty before WS trades arrive."""
     if not settings.finnhub_api_key or settings.finnhub_api_key == "your_finnhub_api_key_here":
         return
 
-    async with httpx.AsyncClient() as client:
-        for symbol in list(_subscribed_symbols):
-            try:
-                resp = await client.get(
-                    "https://finnhub.io/api/v1/quote",
-                    params={"symbol": symbol, "token": settings.finnhub_api_key},
-                    timeout=5,
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    price = data.get("c", 0)
-                    prev_close = data.get("pc", 0)
-                    if price > 0:
-                        quote_cache[symbol] = {
-                            "symbol": symbol,
-                            "price": price,
-                            "volume": data.get("v", 0) or 0,
-                            "timestamp": data.get("t", int(time.time())) * 1000,
-                        }
-                        if symbol not in sparkline_cache:
-                            sparkline_cache[symbol] = deque(maxlen=20)
-                        if prev_close > 0:
-                            sparkline_cache[symbol].append(prev_close)
-                        sparkline_cache[symbol].append(price)
-                        _sparkline_last_sample[symbol] = time.time()
-                        logger.debug(f"Seeded {symbol} @ {price} (pc={prev_close})")
-                # Small delay to respect rate limits (60/min)
-                await asyncio.sleep(0.1)
-            except Exception as e:
-                logger.debug(f"Failed to seed {symbol}: {e}")
+    for symbol in list(_subscribed_symbols):
+        await _seed_symbol_from_rest(symbol)
+        await asyncio.sleep(0.1)  # respect rate limits (60/min)
 
     logger.info(f"Seeded cache with {len(quote_cache)} symbols via REST API")
 
