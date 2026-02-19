@@ -22,8 +22,11 @@ DEFAULT_SYMBOLS = [
     "TSLA", "NVDA", "BRK.B", "UNH", "XOM",
 ]
 
+SPARKLINE_INTERVAL = 60  # seconds between sparkline data points
+
 quote_cache: dict[str, dict] = {}
 sparkline_cache: dict[str, deque] = {}
+_sparkline_last_sample: dict[str, float] = {}
 _subscribed_symbols: set[str] = set()
 _ws = None
 _task: asyncio.Task | None = None
@@ -105,9 +108,16 @@ async def _connect_and_consume():
                                     "timestamp": timestamp,
                                 }
 
+                                now = time.time()
                                 if symbol not in sparkline_cache:
                                     sparkline_cache[symbol] = deque(maxlen=20)
-                                sparkline_cache[symbol].append(price)
+                                    sparkline_cache[symbol].append(price)
+                                    _sparkline_last_sample[symbol] = now
+                                elif now - _sparkline_last_sample.get(symbol, 0) >= SPARKLINE_INTERVAL:
+                                    sparkline_cache[symbol].append(price)
+                                    _sparkline_last_sample[symbol] = now
+                                elif sparkline_cache[symbol]:
+                                    sparkline_cache[symbol][-1] = price
                     except (json.JSONDecodeError, KeyError) as e:
                         logger.debug(f"Error processing message: {e}")
 
@@ -140,8 +150,11 @@ async def _run_simulated():
             "timestamp": int(time.time() * 1000),
         }
         sparkline_cache[symbol] = deque(maxlen=20)
+        walk_price = base
         for i in range(20):
-            sparkline_cache[symbol].append(base * (1 + random.uniform(-0.02, 0.02)))
+            walk_price = round(walk_price * (1 + random.uniform(-0.002, 0.002)), 2)
+            sparkline_cache[symbol].append(walk_price)
+        _sparkline_last_sample[symbol] = time.time()
 
     while _running:
         await asyncio.sleep(1.5)
@@ -158,9 +171,16 @@ async def _run_simulated():
                     "timestamp": int(time.time() * 1000),
                 }
 
+                now = time.time()
                 if symbol not in sparkline_cache:
                     sparkline_cache[symbol] = deque(maxlen=20)
-                sparkline_cache[symbol].append(new_price)
+                    sparkline_cache[symbol].append(new_price)
+                    _sparkline_last_sample[symbol] = now
+                elif now - _sparkline_last_sample.get(symbol, 0) >= SPARKLINE_INTERVAL:
+                    sparkline_cache[symbol].append(new_price)
+                    _sparkline_last_sample[symbol] = now
+                elif sparkline_cache[symbol]:
+                    sparkline_cache[symbol][-1] = new_price
 
 
 async def _seed_cache_from_rest():
@@ -192,6 +212,7 @@ async def _seed_cache_from_rest():
                         if prev_close > 0:
                             sparkline_cache[symbol].append(prev_close)
                         sparkline_cache[symbol].append(price)
+                        _sparkline_last_sample[symbol] = time.time()
                         logger.debug(f"Seeded {symbol} @ {price} (pc={prev_close})")
                 # Small delay to respect rate limits (60/min)
                 await asyncio.sleep(0.1)
