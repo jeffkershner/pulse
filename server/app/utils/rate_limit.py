@@ -18,5 +18,5 @@ class RateLimiter:
         return True
 
 
-otp_send_limiter = RateLimiter(max_requests=3, window_seconds=900)
-otp_verify_limiter = RateLimiter(max_requests=5, window_seconds=900)
+otp_send_limiter = RateLimiter(max_requests=3, window_seconds=1200)
+otp_verify_limiter = RateLimiter(max_requests=5, window_seconds=1200)
