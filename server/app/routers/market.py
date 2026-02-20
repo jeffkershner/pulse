@@ -16,6 +16,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["market"])
 
+# Track active SSE connections per user to prevent tab-spam resource exhaustion
+_active_streams: dict[str, int] = {}  # user_id -> count
+MAX_STREAMS_PER_USER = 3
+
 # ETF tickers used as proxies for major indices, with scaling factors to
 # convert ETF prices to approximate index values.
 # DIA ≈ DJIA / 100, SPY ≈ S&P 500 / 10 (by ETF design, very stable).
@@ -163,6 +167,13 @@ async def stream_quotes(
         from fastapi import HTTPException, status
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
+    user_id = payload.get("sub", "unknown")
+
+    # Enforce per-user SSE connection limit
+    if _active_streams.get(user_id, 0) >= MAX_STREAMS_PER_USER:
+        from fastapi import HTTPException, status
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many open streams")
+
     symbol_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
 
     # Auto-subscribe any symbols not already tracked (e.g. watchlist items after restart)
@@ -171,55 +182,61 @@ async def stream_quotes(
             await finnhub_service.subscribe(sym)
 
     async def event_generator():
-        # Send initial snapshot
-        snapshots = []
-        for symbol in symbol_list:
-            quote = finnhub_service.get_quote(symbol)
-            sparkline = finnhub_service.get_sparkline(symbol)
-            if quote:
-                snapshots.append({
-                    "symbol": symbol,
-                    "price": quote["price"],
-                    "volume": quote.get("volume", 0),
-                    "timestamp": quote.get("timestamp", 0),
-                    "sparkline": sparkline,
-                })
-        yield {"event": "snapshot", "data": json.dumps(snapshots)}
-
-        # Stream updates
-        last_prices: dict[str, float] = {}
-        heartbeat_counter = 0
-        while True:
-            if await request.is_disconnected():
-                break
-
-            updates = []
+        _active_streams[user_id] = _active_streams.get(user_id, 0) + 1
+        try:
+            # Send initial snapshot
+            snapshots = []
             for symbol in symbol_list:
                 quote = finnhub_service.get_quote(symbol)
+                sparkline = finnhub_service.get_sparkline(symbol)
                 if quote:
-                    price = quote["price"]
-                    if last_prices.get(symbol) != price:
-                        last_prices[symbol] = price
-                        sparkline = finnhub_service.get_sparkline(symbol)
-                        updates.append({
-                            "symbol": symbol,
-                            "price": price,
-                            "volume": quote.get("volume", 0),
-                            "timestamp": quote.get("timestamp", 0),
-                            "sparkline": sparkline,
-                        })
+                    snapshots.append({
+                        "symbol": symbol,
+                        "price": quote["price"],
+                        "volume": quote.get("volume", 0),
+                        "timestamp": quote.get("timestamp", 0),
+                        "sparkline": sparkline,
+                    })
+            yield {"event": "snapshot", "data": json.dumps(snapshots)}
 
-            if updates:
-                yield {"event": "quote", "data": json.dumps(updates)}
-                heartbeat_counter = 0
-            else:
-                heartbeat_counter += 1
-                # Send heartbeat every ~5 seconds (10 iterations * 0.5s)
-                # Must be shorter than Railway's proxy idle timeout
-                if heartbeat_counter >= 10:
-                    yield {"event": "heartbeat", "data": ""}
+            # Stream updates
+            last_prices: dict[str, float] = {}
+            heartbeat_counter = 0
+            while True:
+                if await request.is_disconnected():
+                    break
+
+                updates = []
+                for symbol in symbol_list:
+                    quote = finnhub_service.get_quote(symbol)
+                    if quote:
+                        price = quote["price"]
+                        if last_prices.get(symbol) != price:
+                            last_prices[symbol] = price
+                            sparkline = finnhub_service.get_sparkline(symbol)
+                            updates.append({
+                                "symbol": symbol,
+                                "price": price,
+                                "volume": quote.get("volume", 0),
+                                "timestamp": quote.get("timestamp", 0),
+                                "sparkline": sparkline,
+                            })
+
+                if updates:
+                    yield {"event": "quote", "data": json.dumps(updates)}
                     heartbeat_counter = 0
+                else:
+                    heartbeat_counter += 1
+                    # Send heartbeat every ~5 seconds (10 iterations * 0.5s)
+                    # Must be shorter than Railway's proxy idle timeout
+                    if heartbeat_counter >= 10:
+                        yield {"event": "heartbeat", "data": ""}
+                        heartbeat_counter = 0
 
-            await asyncio.sleep(0.5)
+                await asyncio.sleep(0.5)
+        finally:
+            _active_streams[user_id] = max(_active_streams.get(user_id, 1) - 1, 0)
+            if _active_streams[user_id] == 0:
+                del _active_streams[user_id]
 
     return EventSourceResponse(event_generator())
