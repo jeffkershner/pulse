@@ -214,8 +214,9 @@ async def stream_quotes(
                 heartbeat_counter = 0
             else:
                 heartbeat_counter += 1
-                # Send heartbeat every ~15 seconds (30 iterations * 0.5s)
-                if heartbeat_counter >= 30:
+                # Send heartbeat every ~5 seconds (10 iterations * 0.5s)
+                # Must be shorter than Railway's proxy idle timeout
+                if heartbeat_counter >= 10:
                     yield {"event": "heartbeat", "data": ""}
                     heartbeat_counter = 0
 
